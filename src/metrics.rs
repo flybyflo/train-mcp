@@ -21,6 +21,9 @@ pub struct Metrics {
     pub oebb_upstream_retries_total: IntCounterVec,
     pub oebb_upstream_timeouts_total: IntCounterVec,
     pub oebb_cache_events_total: IntCounterVec,
+    pub code_submissions_total: IntCounterVec,
+    pub code_chars_histogram: HistogramVec,
+    pub code_references_total: IntCounterVec,
 }
 
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
@@ -127,6 +130,30 @@ pub static METRICS: Lazy<Metrics> = Lazy::new(|| {
         &["event"],
     )
     .expect("create oebb_cache_events_total");
+    let code_submissions_total = IntCounterVec::new(
+        Opts::new(
+            "train_mcp_code_submissions_total",
+            "Total number of code submissions to MCP search/execute tools.",
+        ),
+        &["tool"],
+    )
+    .expect("create code_submissions_total");
+    let code_chars_histogram = HistogramVec::new(
+        HistogramOpts::new(
+            "train_mcp_code_chars",
+            "Submitted code size in characters by tool.",
+        ),
+        &["tool"],
+    )
+    .expect("create code_chars_histogram");
+    let code_references_total = IntCounterVec::new(
+        Opts::new(
+            "train_mcp_code_references_total",
+            "Count of referenced codemode functions in submitted code.",
+        ),
+        &["tool", "reference"],
+    )
+    .expect("create code_references_total");
 
     REGISTRY
         .register(Box::new(http_requests_total.clone()))
@@ -170,6 +197,15 @@ pub static METRICS: Lazy<Metrics> = Lazy::new(|| {
     REGISTRY
         .register(Box::new(oebb_cache_events_total.clone()))
         .expect("register oebb_cache_events_total");
+    REGISTRY
+        .register(Box::new(code_submissions_total.clone()))
+        .expect("register code_submissions_total");
+    REGISTRY
+        .register(Box::new(code_chars_histogram.clone()))
+        .expect("register code_chars_histogram");
+    REGISTRY
+        .register(Box::new(code_references_total.clone()))
+        .expect("register code_references_total");
 
     Metrics {
         http_requests_total,
@@ -186,6 +222,9 @@ pub static METRICS: Lazy<Metrics> = Lazy::new(|| {
         oebb_upstream_retries_total,
         oebb_upstream_timeouts_total,
         oebb_cache_events_total,
+        code_submissions_total,
+        code_chars_histogram,
+        code_references_total,
     }
 });
 
@@ -283,6 +322,24 @@ pub fn observe_oebb_cache_event(event: &str) {
     METRICS
         .oebb_cache_events_total
         .with_label_values(&[event])
+        .inc();
+}
+
+pub fn observe_code_submission(tool: &str, chars: usize) {
+    METRICS
+        .code_submissions_total
+        .with_label_values(&[tool])
+        .inc();
+    METRICS
+        .code_chars_histogram
+        .with_label_values(&[tool])
+        .observe(chars as f64);
+}
+
+pub fn observe_code_reference(tool: &str, reference: &str) {
+    METRICS
+        .code_references_total
+        .with_label_values(&[tool, reference])
         .inc();
 }
 

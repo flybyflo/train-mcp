@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -170,6 +171,41 @@ fn extract_structured_tool_error(
     (serde_json::Value::Object(obj), Some((code, message)))
 }
 
+const SEARCH_REFERENCES: [&str; 2] = ["getCatalog", "listTools"];
+const EXECUTE_REFERENCES: [&str; 7] = [
+    "oebbPlanJourney",
+    "oebbPlanTour",
+    "oebbResolveItineraryStops",
+    "oebbLocations",
+    "oebbDepartures",
+    "oebbJourneys",
+    "oebbTrip",
+];
+
+fn detect_codemode_references(code: &str, tool: &str) -> Vec<&'static str> {
+    let targets = match tool {
+        "search" => &SEARCH_REFERENCES[..],
+        "execute" => &EXECUTE_REFERENCES[..],
+        _ => return Vec::new(),
+    };
+
+    let mut found = BTreeSet::new();
+    for reference in targets {
+        let dot = format!("codemode.{reference}");
+        let bracket_single = format!("codemode['{reference}']");
+        let bracket_double = format!("codemode[\"{reference}\"]");
+        if code.contains(&dot) || code.contains(&bracket_single) || code.contains(&bracket_double) {
+            found.insert(*reference);
+        }
+    }
+
+    if found.is_empty() {
+        vec!["none"]
+    } else {
+        found.into_iter().collect()
+    }
+}
+
 #[tool_router]
 impl TrainMcp {
     /// Catalog-only mode — use to discover available tools, their parameters, and examples.
@@ -179,6 +215,10 @@ impl TrainMcp {
     #[tool(name = "search")]
     async fn search(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
         let started = Instant::now();
+        metrics::observe_code_submission("search", params.0.code.len());
+        for reference in detect_codemode_references(&params.0.code, "search") {
+            metrics::observe_code_reference("search", reference);
+        }
         let result = self.executor.execute(Mode::Search, &params.0.code).await;
         let outcome = if result.error.is_some() { "error" } else { "ok" };
         metrics::observe_tool_call("search", outcome, started.elapsed());
@@ -196,6 +236,10 @@ impl TrainMcp {
     #[tool(name = "execute")]
     async fn execute(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
         let started = Instant::now();
+        metrics::observe_code_submission("execute", params.0.code.len());
+        for reference in detect_codemode_references(&params.0.code, "execute") {
+            metrics::observe_code_reference("execute", reference);
+        }
         let result = self.executor.execute(Mode::Execute, &params.0.code).await;
         let outcome = if result.error.is_some() { "error" } else { "ok" };
         metrics::observe_tool_call("execute", outcome, started.elapsed());
