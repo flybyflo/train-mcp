@@ -20,6 +20,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 use train_mcp::catalog::create_catalog_payload;
+use train_mcp::metrics;
 use train_mcp::server::TrainMcp;
 
 #[derive(Clone)]
@@ -42,6 +43,22 @@ async fn healthz() -> Json<serde_json::Value> {
 
 async fn catalog_route() -> Json<serde_json::Value> {
     Json(create_catalog_payload())
+}
+
+async fn metrics_route() -> Response {
+    match metrics::gather_text() {
+        Ok(payload) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+            payload,
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": "metrics_encode_failed", "message": error })),
+        )
+            .into_response(),
+    }
 }
 
 #[tokio::main]
@@ -91,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/catalog", get(catalog_route))
+        .route("/metrics", get(metrics_route))
         .route(
             "/mcp",
             post(mcp_handler).route_layer(middleware::from_fn_with_state(
@@ -128,13 +146,15 @@ async fn enforce_request_limits(
     request: Request,
     next: Next,
 ) -> Response {
+    let started = Instant::now();
     let permit =
         match tokio::time::timeout(guard.queue_timeout, guard.inflight.clone().acquire_owned())
             .await
         {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
-                return (
+                metrics::reject_request("server_unavailable");
+                let response = (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(json!({
                         "ok": false,
@@ -142,10 +162,13 @@ async fn enforce_request_limits(
                         "message": "Server is shutting down.",
                     })),
                 )
-                    .into_response()
+                    .into_response();
+                metrics::observe_http_request("/mcp", response.status(), started.elapsed());
+                return response;
             }
             Err(_) => {
-                return (
+                metrics::reject_request("server_busy");
+                let response = (
                     StatusCode::TOO_MANY_REQUESTS,
                     Json(json!({
                         "ok": false,
@@ -153,7 +176,9 @@ async fn enforce_request_limits(
                         "message": "Too many concurrent requests.",
                     })),
                 )
-                    .into_response()
+                    .into_response();
+                metrics::observe_http_request("/mcp", response.status(), started.elapsed());
+                return response;
             }
         };
 
@@ -164,7 +189,8 @@ async fn enforce_request_limits(
             state.count = 0;
         }
         if state.count >= guard.rate_limit_per_second {
-            return (
+            metrics::reject_request("rate_limited");
+            let response = (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
                     "ok": false,
@@ -173,11 +199,16 @@ async fn enforce_request_limits(
                 })),
             )
                 .into_response();
+            metrics::observe_http_request("/mcp", response.status(), started.elapsed());
+            return response;
         }
         state.count += 1;
     }
 
+    metrics::mcp_inflight_inc();
     let response = next.run(request).await;
+    metrics::mcp_inflight_dec();
+    metrics::observe_http_request("/mcp", response.status(), started.elapsed());
     drop(permit);
     response
 }

@@ -51,3 +51,12 @@ readinessProbe:
   httpGet:
     path: /healthz
     port: http
+
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics

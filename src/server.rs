@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
@@ -10,6 +11,7 @@ use serde_json::json;
 use crate::catalog::create_catalog_payload;
 use crate::executor::codemode::TOOL_ERROR_MARKER;
 use crate::executor::quickjs::{ExecutorLimits, Mode, QuickJsExecutor};
+use crate::metrics;
 use crate::transit::{OebbTransitProvider, TransitProvider};
 
 /// Input for both the `search` and `execute` MCP tools.
@@ -121,7 +123,10 @@ impl TrainMcp {
     /// Example: `const tools = await codemode.listTools({}); return tools;`
     #[tool(name = "search")]
     async fn search(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
+        let started = Instant::now();
         let result = self.executor.execute(Mode::Search, &params.0.code).await;
+        let outcome = if result.error.is_some() { "error" } else { "ok" };
+        metrics::observe_tool_call("search", outcome, started.elapsed());
         Ok(Self::build_call_tool_result(result))
     }
 
@@ -133,7 +138,10 @@ impl TrainMcp {
     /// Example 2 (multi-city tour): `const t = await codemode.oebbPlanTour({ departure: "2026-02-27T08:00:00+01:00", legs: [{ from: "A", to: "B", minStopMinutesAfter: 90 }, { from: "B", to: "C" }] }); return t;`
     #[tool(name = "execute")]
     async fn execute(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
+        let started = Instant::now();
         let result = self.executor.execute(Mode::Execute, &params.0.code).await;
+        let outcome = if result.error.is_some() { "error" } else { "ok" };
+        metrics::observe_tool_call("execute", outcome, started.elapsed());
         Ok(Self::build_call_tool_result(result))
     }
 }
