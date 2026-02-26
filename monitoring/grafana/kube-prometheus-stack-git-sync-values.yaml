@@ -1,0 +1,58 @@
+# Enable Grafana dashboard Git Sync for the train-mcp repository.
+# Apply with:
+# helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#   --namespace monitoring --reuse-values \
+#   -f monitoring/grafana/kube-prometheus-stack-git-sync-values.yaml
+
+grafana:
+  # Do not use the dashboard sidecar when using file providers from Git.
+  sidecar:
+    dashboards:
+      enabled: false
+
+  extraVolumes:
+    - name: dashboards-git
+      emptyDir: {}
+
+  extraVolumeMounts:
+    - name: dashboards-git
+      mountPath: /var/lib/grafana/dashboards/git
+
+  # Extra sidecar that continuously syncs the Git repository into the shared volume.
+  # If you use a private repo, add credentials via Secret and env vars.
+  extraContainers: |
+    - name: git-sync
+      image: registry.k8s.io/git-sync/git-sync:v4.2.3
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: GITSYNC_REPO
+          value: https://github.com/flybyflo/train-mcp.git
+        - name: GITSYNC_BRANCH
+          value: main
+        - name: GITSYNC_ROOT
+          value: /git
+        - name: GITSYNC_LINK
+          value: current
+        - name: GITSYNC_PERIOD
+          value: 30s
+        - name: GITSYNC_ONE_TIME
+          value: "false"
+      volumeMounts:
+        - name: dashboards-git
+          mountPath: /git
+
+  # Provision dashboard files from the git-sync checkout.
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: train-mcp
+          orgId: 1
+          folder: Train MCP
+          type: file
+          disableDeletion: false
+          editable: false
+          allowUiUpdates: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards/git/current/monitoring/grafana
