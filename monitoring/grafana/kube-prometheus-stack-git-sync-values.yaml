@@ -5,10 +5,9 @@
 #   -f monitoring/grafana/kube-prometheus-stack-git-sync-values.yaml
 
 grafana:
-  # Do not use the dashboard sidecar when using file providers from Git.
   sidecar:
     dashboards:
-      enabled: false
+      enabled: true
 
   extraVolumes:
     - name: dashboards-git
@@ -37,6 +36,16 @@ grafana:
           value: 30s
         - name: GITSYNC_ONE_TIME
           value: "false"
+        - name: GITSYNC_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: grafana-git-sync-creds
+              key: username
+        - name: GITSYNC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-git-sync-creds
+              key: password
       volumeMounts:
         - name: dashboards-git
           mountPath: /git
@@ -46,6 +55,16 @@ grafana:
     dashboardproviders.yaml:
       apiVersion: 1
       providers:
+        - name: default
+          orgId: 1
+          folder: Kubernetes / Default
+          type: file
+          disableDeletion: false
+          editable: false
+          allowUiUpdates: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards/default
         - name: train-mcp
           orgId: 1
           folder: Train MCP
