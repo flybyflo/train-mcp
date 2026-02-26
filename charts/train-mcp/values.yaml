@@ -1,0 +1,53 @@
+replicaCount: 1
+
+image:
+  repository: train-mcp
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 3000
+
+resources: {}
+
+autoscaling:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+env:
+  OEBB_BASE_URL: "https://v6.oebb.transport.rest/api"
+  MCP_MAX_CONCURRENCY: "128"
+  MCP_RATE_LIMIT_PER_SECOND: "30"
+  MCP_QUEUE_TIMEOUT_MS: "250"
+  MCP_MAX_BODY_BYTES: "131072"
+  MCP_ALLOWED_ORIGINS: ""
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http

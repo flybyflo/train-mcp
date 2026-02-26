@@ -1,0 +1,29 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo
+# Keep Cargo.lock tracked for application/binary crates.
+# Uncomment the next line only if this repo becomes a library crate.
+# Cargo.lock
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# Logs and runtime files
+*.log
+*.pid
+*.pid.lock
+
+# Editor and IDE
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
