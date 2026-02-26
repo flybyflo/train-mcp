@@ -23,7 +23,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/train-mcp /usr/local/bin/train-mcp
 
-ENV PORT=3000
-EXPOSE 3000
+ENV PORT=8000
+EXPOSE 8000
 
 CMD ["train-mcp"]

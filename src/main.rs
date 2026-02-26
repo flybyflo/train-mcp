@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(3000);
+        .unwrap_or(8000);
     let max_concurrency = usize_from_env("MCP_MAX_CONCURRENCY", 128).max(1);
     let rate_limit_per_second = u64_from_env("MCP_RATE_LIMIT_PER_SECOND", 30).max(1);
     let queue_timeout = duration_from_env_ms("MCP_QUEUE_TIMEOUT_MS", 250);
