@@ -55,7 +55,9 @@ impl TrainMcp {
         }
     }
 
-    fn build_call_tool_result(result: crate::executor::quickjs::ExecuteResult) -> CallToolResult {
+    fn build_call_tool_result(
+        result: crate::executor::quickjs::ExecuteResult,
+    ) -> (CallToolResult, &'static str, &'static str) {
         let (normalized_result, structured_error) = extract_structured_tool_error(result.result);
         let executor_error = result.error;
 
@@ -65,6 +67,8 @@ impl TrainMcp {
             (None, None) => (None, None),
         };
         let is_ok = error_code.is_none();
+        let (business_outcome, reason) =
+            classify_business_outcome(error_code.as_deref(), error_message.as_deref());
 
         let payload = json!({
             "ok": is_ok,
@@ -75,11 +79,62 @@ impl TrainMcp {
         });
 
         if is_ok {
-            CallToolResult::structured(payload)
+            (CallToolResult::structured(payload), business_outcome, reason)
         } else {
-            CallToolResult::structured_error(payload)
+            (
+                CallToolResult::structured_error(payload),
+                business_outcome,
+                reason,
+            )
         }
     }
+}
+
+fn classify_business_outcome(
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> (&'static str, &'static str) {
+    if error_code.is_none() {
+        return ("success", "success");
+    }
+
+    let mut text = String::new();
+    if let Some(code) = error_code {
+        text.push_str(code);
+        text.push(' ');
+    }
+    if let Some(message) = error_message {
+        text.push_str(message);
+    }
+    let lower = text.to_lowercase();
+
+    if lower.contains("timeout") || lower.contains("timed out") || lower.contains("deadline") {
+        return ("failure", "timeout");
+    }
+    if lower.contains("invalid")
+        || lower.contains("failed to parse input")
+        || lower.contains("cannot be empty")
+    {
+        return ("failure", "validation_error");
+    }
+    if lower.contains("no_matching")
+        || lower.contains("not_found")
+        || lower.contains("no journeys")
+        || lower.contains("no stop matched")
+    {
+        return ("failure", "no_results");
+    }
+    if lower.contains("oebb")
+        || lower.contains("transit api")
+        || lower.contains("lookup_failed")
+        || lower.contains("journeys_failed")
+        || lower.contains("departures_failed")
+        || lower.contains("trip_failed")
+        || lower.contains("plan_")
+    {
+        return ("failure", "upstream_error");
+    }
+    ("failure", "execution_error")
 }
 
 fn extract_structured_tool_error(
@@ -127,7 +182,9 @@ impl TrainMcp {
         let result = self.executor.execute(Mode::Search, &params.0.code).await;
         let outcome = if result.error.is_some() { "error" } else { "ok" };
         metrics::observe_tool_call("search", outcome, started.elapsed());
-        Ok(Self::build_call_tool_result(result))
+        let (tool_result, business_outcome, reason) = Self::build_call_tool_result(result);
+        metrics::observe_tool_result("search", business_outcome, reason);
+        Ok(tool_result)
     }
 
     /// Transit execution mode. All tools are called as `const result = await codemode.<toolName>({...}); return result;`
@@ -142,7 +199,9 @@ impl TrainMcp {
         let result = self.executor.execute(Mode::Execute, &params.0.code).await;
         let outcome = if result.error.is_some() { "error" } else { "ok" };
         metrics::observe_tool_call("execute", outcome, started.elapsed());
-        Ok(Self::build_call_tool_result(result))
+        let (tool_result, business_outcome, reason) = Self::build_call_tool_result(result);
+        metrics::observe_tool_result("execute", business_outcome, reason);
+        Ok(tool_result)
     }
 }
 

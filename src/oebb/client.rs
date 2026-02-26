@@ -6,6 +6,8 @@ use moka::future::Cache;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::metrics;
+
 use super::filter::filter_journeys;
 use super::normalize::{
     assert_payload_size, compact_json, compact_object, looks_like_stop_id,
@@ -56,20 +58,25 @@ impl OebbClient {
     ) -> anyhow::Result<Value> {
         // Check cache first.
         if let Some(cached) = self.cache.get(cache_key).await {
+            metrics::observe_oebb_cache_event("hit");
             return Ok(cached);
         }
+        metrics::observe_oebb_cache_event("miss");
 
         // Gap 5: In-flight deduplication — if another task is fetching the same key, wait for it.
         {
             let inflight = self.inflight.lock().await;
             if let Some(notify) = inflight.get(cache_key) {
+                metrics::observe_oebb_cache_event("inflight_wait");
                 let notify = notify.clone();
                 drop(inflight);
                 notify.notified().await;
                 // After notification, the result should be in cache.
                 if let Some(cached) = self.cache.get(cache_key).await {
+                    metrics::observe_oebb_cache_event("hit_after_wait");
                     return Ok(cached);
                 }
+                metrics::observe_oebb_cache_event("miss_after_wait");
                 // If not in cache after notification, fall through to fetch.
             }
         }
@@ -101,6 +108,7 @@ impl OebbClient {
         cache_key: &str,
         ttl: Duration,
     ) -> anyhow::Result<Value> {
+        let endpoint = normalize_oebb_endpoint(path);
         let url = format!("{}{}", self.config.base_url, path);
         let mut last_error: Option<anyhow::Error> = None;
         let started = Instant::now();
@@ -110,6 +118,7 @@ impl OebbClient {
                 break;
             }
 
+            let attempt_started = Instant::now();
             let result = self
                 .http
                 .get(&url)
@@ -120,18 +129,26 @@ impl OebbClient {
 
             match result {
                 Ok(response) => {
-                    if !response.status().is_success() {
-                        let status = response.status();
+                    let status = response.status();
+                    let status_code = status.as_u16().to_string();
+                    if !status.is_success() {
                         let body = response.text().await.unwrap_or_default();
+                        metrics::observe_oebb_upstream_attempt(
+                            endpoint,
+                            &status_code,
+                            "http_error",
+                            attempt_started.elapsed(),
+                        );
                         let msg = format!(
                             "Transit API error {}: {}",
-                            status.as_u16(),
+                            status_code,
                             &body[..body.len().min(500)]
                         );
                         if RETRYABLE_STATUSES.contains(&status.as_u16())
                             && attempt < self.config.max_attempts
                         {
                             last_error = Some(anyhow::anyhow!(msg));
+                            metrics::observe_oebb_retry(endpoint, "retryable_status");
                             let delay = compute_retry_delay_ms(
                                 attempt,
                                 self.config.retry_base_delay_ms,
@@ -150,7 +167,24 @@ impl OebbClient {
                         }
                         return Err(anyhow::anyhow!(msg));
                     }
-                    let payload: Value = response.json().await?;
+                    let payload: Value = match response.json().await {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            metrics::observe_oebb_upstream_attempt(
+                                endpoint,
+                                "decode_error",
+                                "decode_error",
+                                attempt_started.elapsed(),
+                            );
+                            return Err(error.into());
+                        }
+                    };
+                    metrics::observe_oebb_upstream_attempt(
+                        endpoint,
+                        &status_code,
+                        "success",
+                        attempt_started.elapsed(),
+                    );
                     // Insert into cache with TTL.
                     self.cache
                         .insert(cache_key.to_string(), payload.clone())
@@ -164,8 +198,30 @@ impl OebbClient {
                     return Ok(payload);
                 }
                 Err(e) => {
+                    let is_timeout = e.is_timeout();
                     last_error = Some(e.into());
+                    if is_timeout {
+                        metrics::observe_oebb_timeout(endpoint);
+                    }
+                    metrics::observe_oebb_upstream_attempt(
+                        endpoint,
+                        if is_timeout {
+                            "timeout"
+                        } else {
+                            "network_error"
+                        },
+                        "network_error",
+                        attempt_started.elapsed(),
+                    );
                     if attempt < self.config.max_attempts {
+                        metrics::observe_oebb_retry(
+                            endpoint,
+                            if is_timeout {
+                                "timeout"
+                            } else {
+                                "network_error"
+                            },
+                        );
                         let delay = compute_retry_delay_ms(
                             attempt,
                             self.config.retry_base_delay_ms,
@@ -1566,6 +1622,14 @@ impl OebbClient {
                 }
             }
         }
+    }
+}
+
+fn normalize_oebb_endpoint(path: &str) -> &str {
+    if path.starts_with("/trips/") {
+        "/trips/:id"
+    } else {
+        path
     }
 }
 

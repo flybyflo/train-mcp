@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
+    body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
@@ -133,11 +134,86 @@ async fn mcp_handler(
     axum::extract::State(mut service): axum::extract::State<StreamableHttpService<TrainMcp>>,
     request: axum::extract::Request,
 ) -> impl axum::response::IntoResponse {
+    const MCP_PARSE_MAX_BYTES: usize = 256 * 1024;
     use tower_service::Service;
+
+    let (parts, body) = request.into_parts();
+    let body_bytes = match to_bytes(body, MCP_PARSE_MAX_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            metrics::observe_protocol_invalid_payload("body_too_large_or_unreadable");
+            metrics::observe_protocol_request("invalid_payload", "error");
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "ok": false,
+                    "error": "payload_too_large",
+                    "message": "MCP request body is too large or unreadable.",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let (protocol_methods, invalid_payload) = extract_protocol_methods(&body_bytes);
+    if invalid_payload {
+        metrics::observe_protocol_invalid_payload("invalid_json_rpc");
+    }
+
+    let request = axum::http::Request::from_parts(parts, Body::from(body_bytes));
     let response = service.call(request).await;
     match response {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            let outcome = if resp.status().is_success() { "ok" } else { "error" };
+            for method in protocol_methods {
+                metrics::observe_protocol_request(method, outcome);
+            }
+            resp.map(Body::new)
+        }
         Err(infallible) => match infallible {},
+    }
+}
+
+fn extract_protocol_methods(body_bytes: &[u8]) -> (Vec<&'static str>, bool) {
+    let payload = match serde_json::from_slice::<serde_json::Value>(body_bytes) {
+        Ok(value) => value,
+        Err(_) => return (vec!["invalid_payload"], true),
+    };
+
+    match payload {
+        serde_json::Value::Object(obj) => {
+            let method = classify_protocol_method(obj.get("method"));
+            (vec![method], false)
+        }
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                return (vec!["invalid_payload"], true);
+            }
+            let methods = items
+                .iter()
+                .filter_map(|v| v.as_object())
+                .map(|obj| classify_protocol_method(obj.get("method")))
+                .collect::<Vec<_>>();
+            if methods.is_empty() {
+                (vec!["invalid_payload"], true)
+            } else {
+                (methods, false)
+            }
+        }
+        _ => (vec!["invalid_payload"], true),
+    }
+}
+
+fn classify_protocol_method(method_value: Option<&serde_json::Value>) -> &'static str {
+    let method = method_value
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim();
+    match method {
+        "initialize" => "initialize",
+        "tools/list" => "tools_list",
+        "tools/call" => "tools_call",
+        _ => "other",
     }
 }
 
