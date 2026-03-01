@@ -1,3 +1,4 @@
+use deunicode::deunicode;
 use serde_json::Value;
 
 const MAX_TOOL_JSON_CHARS: usize = 45_000;
@@ -331,11 +332,24 @@ pub fn summarize_journeys_payload(payload: &Value) -> Option<Value> {
     Some(compact_object(&result))
 }
 
-/// Normalize text for comparison: lowercase, strip whitespace + non-alphanumeric.
+/// Normalize text for comparison: apply German umlaut expansion, transliterate
+/// remaining Unicode to ASCII, lowercase, strip non-alphanumeric. This allows
+/// e.g. "Nürnberg" and "Nuernberg" to both normalize to "nuernberg".
 pub fn normalize_comparable_text(value: &str) -> String {
-    value
-        .trim()
-        .to_lowercase()
+    let lowered = value.trim().to_lowercase();
+    // Expand German umlauts before generic transliteration so that both
+    // "ü" and "ue" converge to "ue" (deunicode maps ü→u which would diverge).
+    let german_expanded: String = lowered
+        .chars()
+        .flat_map(|c| match c {
+            'ä' => vec!['a', 'e'],
+            'ö' => vec!['o', 'e'],
+            'ü' => vec!['u', 'e'],
+            'ß' => vec!['s', 's'],
+            other => vec![other],
+        })
+        .collect();
+    deunicode(&german_expanded)
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect()
@@ -344,4 +358,87 @@ pub fn normalize_comparable_text(value: &str) -> String {
 /// Check if a string looks like a numeric stop ID.
 pub fn looks_like_stop_id(value: &str) -> bool {
     value.trim().chars().all(|c| c.is_ascii_digit()) && !value.trim().is_empty()
+}
+
+/// Expand well-known English / colloquial station aliases to canonical German
+/// names so the ÖBB location API returns better results.
+pub fn expand_station_alias(input: &str) -> Option<&'static str> {
+    match input.trim().to_lowercase().as_str() {
+        "vienna" | "wien" => Some("Wien Hbf"),
+        "munich" | "muenchen" | "münchen" => Some("München Hbf"),
+        "graz" => Some("Graz Hbf"),
+        "salzburg" => Some("Salzburg Hbf"),
+        "innsbruck" => Some("Innsbruck Hbf"),
+        "linz" => Some("Linz Hbf"),
+        "klagenfurt" => Some("Klagenfurt Hbf"),
+        "zurich" | "zuerich" | "zürich" => Some("Zürich HB"),
+        "prague" | "prag" | "praha" => Some("Praha hl.n."),
+        "budapest" => Some("Budapest-Keleti"),
+        "bratislava" => Some("Bratislava hl.st."),
+        "nuremberg" | "nuernberg" | "nürnberg" => Some("Nürnberg Hbf"),
+        "cologne" | "koeln" | "köln" => Some("Köln Hbf"),
+        "frankfurt" => Some("Frankfurt(Main)Hbf"),
+        "berlin" => Some("Berlin Hbf"),
+        "hamburg" => Some("Hamburg Hbf"),
+        "stuttgart" => Some("Stuttgart Hbf"),
+        _ => None,
+    }
+}
+
+/// Compute Jaro-Winkler similarity between two strings (0.0–1.0).
+pub fn jaro_winkler_similarity(a: &str, b: &str) -> f64 {
+    strsim::jaro_winkler(a, b)
+}
+
+/// Compute normalized Levenshtein similarity between two strings (0.0–1.0).
+pub fn normalized_levenshtein_similarity(a: &str, b: &str) -> f64 {
+    strsim::normalized_levenshtein(a, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_ascii_folding() {
+        // German umlauts are expanded to digraphs
+        assert_eq!(normalize_comparable_text("Nürnberg"), "nuernberg");
+        assert_eq!(normalize_comparable_text("Nuernberg"), "nuernberg");
+        assert_eq!(normalize_comparable_text("St. Pölten"), "stpoelten");
+        assert_eq!(normalize_comparable_text("Zürich HB"), "zuerichhb");
+        assert_eq!(normalize_comparable_text("Straße"), "strasse");
+    }
+
+    #[test]
+    fn test_normalize_strips_punctuation() {
+        assert_eq!(normalize_comparable_text("Wien Hbf (U)"), "wienhbfu");
+        assert_eq!(normalize_comparable_text("  Graz  "), "graz");
+        assert_eq!(normalize_comparable_text("Frankfurt(Main)Hbf"), "frankfurtmainhbf");
+    }
+
+    #[test]
+    fn test_looks_like_stop_id() {
+        assert!(looks_like_stop_id("8100002"));
+        assert!(looks_like_stop_id(" 8100002 "));
+        assert!(!looks_like_stop_id("Wien Hbf"));
+        assert!(!looks_like_stop_id(""));
+        assert!(!looks_like_stop_id("81abc"));
+    }
+
+    #[test]
+    fn test_expand_station_alias() {
+        assert_eq!(expand_station_alias("vienna"), Some("Wien Hbf"));
+        assert_eq!(expand_station_alias("Vienna"), Some("Wien Hbf"));
+        assert_eq!(expand_station_alias("ZURICH"), Some("Zürich HB"));
+        assert_eq!(expand_station_alias("münchen"), Some("München Hbf"));
+        assert_eq!(expand_station_alias("unknown city"), None);
+    }
+
+    #[test]
+    fn test_jaro_winkler_similarity() {
+        let jw = jaro_winkler_similarity("nuernberg", "nuernberghbf");
+        assert!(jw > 0.85, "expected >0.85, got {}", jw);
+        let jw2 = jaro_winkler_similarity("salzbург", "totallyunrelated");
+        assert!(jw2 < 0.5, "expected <0.5, got {}", jw2);
+    }
 }

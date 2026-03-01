@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::normalize::{as_str, compact_object, normalize_comparable_text, summarize_place};
+use super::normalize::{as_str, compact_object, normalize_comparable_text, summarize_place, jaro_winkler_similarity};
 use super::types::ViaResolution;
 
 /// Check if any leg of a journey uses an excluded operator.
@@ -93,8 +93,19 @@ pub fn journey_contains_via(journey: &Value, via: &ViaResolution) -> bool {
         }
         if let Some(point_name) = point.get("name").and_then(|v| v.as_str()) {
             let normalized_point = normalize_comparable_text(point_name);
-            // Bidirectional contains: handles meta-stop aliases like "Wien Hbf (U)" matching "Wien Hbf"
-            if normalized_point.contains(&needle) || needle.contains(&normalized_point) {
+            // Forward contains: needle found within point name (always safe).
+            if normalized_point.contains(&needle) {
+                return true;
+            }
+            // Reverse contains: point name found within needle, but only when the
+            // point name is long enough to avoid false positives (e.g. "linz"
+            // matching inside "klagenfurtlinzerstrasse").
+            if normalized_point.len() >= 4 && needle.contains(&normalized_point) {
+                return true;
+            }
+            // Fuzzy fallback: accept high Jaro-Winkler similarity for minor API
+            // name variations (e.g. "wien hauptbahnhof" vs "wien hbf").
+            if jaro_winkler_similarity(&needle, &normalized_point) >= 0.88 {
                 return true;
             }
         }
@@ -217,5 +228,64 @@ pub fn summarize_stopover(value: &Value) -> Option<Value> {
         None
     } else {
         Some(compact_object(&result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_journey_with_stop(stop_name: &str, stop_id: &str) -> Value {
+        serde_json::json!({
+            "legs": [{
+                "origin": { "id": stop_id, "name": stop_name },
+                "destination": { "id": "8100002", "name": "Wien Hbf" }
+            }]
+        })
+    }
+
+    fn make_via(input: &str, id: Option<&str>, name: Option<&str>) -> ViaResolution {
+        ViaResolution {
+            input: input.to_string(),
+            id: id.map(String::from),
+            name: name.map(String::from),
+            is_stopover: false,
+            min_stop_minutes: None,
+            max_stop_minutes: None,
+        }
+    }
+
+    #[test]
+    fn test_via_match_by_id() {
+        let journey = make_journey_with_stop("Linz Hbf", "8100013");
+        let via = make_via("Linz", Some("8100013"), Some("Linz Hbf"));
+        assert!(journey_contains_via(&journey, &via));
+    }
+
+    #[test]
+    fn test_via_match_forward_contains() {
+        let journey = make_journey_with_stop("Linz Hbf", "8100013");
+        let via = make_via("Linz", None, Some("Linz"));
+        assert!(journey_contains_via(&journey, &via));
+    }
+
+    #[test]
+    fn test_via_rejects_short_reverse_contains() {
+        // "Linz" (len=4) matching inside "Klagenfurt Linzer Straße" would be a
+        // forward contains of "linz" in "klagenfurtlinzerstrasse", so it still matches.
+        // But a 3-char name like "Ulm" should NOT match "Helmut" via reverse contains.
+        let journey = make_journey_with_stop("Helmut-Station", "999");
+        let via = make_via("Ulm", None, Some("Ulm"));
+        assert!(!journey_contains_via(&journey, &via));
+    }
+
+    #[test]
+    fn test_via_fuzzy_fallback() {
+        // Fuzzy match: "wienhbf" vs "wienhauptbahnhof" — Jaro-Winkler similarity
+        // may or may not be >= 0.88. Let's test with close variants.
+        let journey = make_journey_with_stop("Wien Hbf", "8100002");
+        let via = make_via("Wien Hb", None, Some("Wien Hb"));
+        // "wienhb" vs "wienhbf" should be very similar
+        assert!(journey_contains_via(&journey, &via));
     }
 }

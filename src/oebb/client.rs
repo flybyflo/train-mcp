@@ -10,8 +10,9 @@ use crate::metrics;
 
 use super::filter::filter_journeys;
 use super::normalize::{
-    assert_payload_size, compact_json, compact_object, looks_like_stop_id,
-    normalize_comparable_text, summarize_place,
+    assert_payload_size, compact_json, compact_object, expand_station_alias,
+    jaro_winkler_similarity, looks_like_stop_id, normalize_comparable_text,
+    normalized_levenshtein_similarity, summarize_place,
 };
 use super::rank::{
     extract_intermediate_stops_from_leg, rank_journeys, summarize_ranked_journey, RankedJourney,
@@ -271,8 +272,13 @@ impl OebbClient {
             };
         }
 
+        // Expand well-known aliases (e.g. "vienna" → "Wien Hbf") before querying the API.
+        let effective_query = expand_station_alias(trimmed)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| trimmed.to_string());
+
         let query = vec![
-            ("query".to_string(), trimmed.to_string()),
+            ("query".to_string(), effective_query.clone()),
             ("results".to_string(), LOCATION_RESOLVE_RESULTS.to_string()),
             ("stops".to_string(), "true".to_string()),
             ("addresses".to_string(), "false".to_string()),
@@ -301,7 +307,7 @@ impl OebbClient {
                 let id = entry.get("id")?.as_str()?.to_string();
                 let name = entry.get("name")?.as_str()?.to_string();
                 let loc_type = entry.get("type").and_then(|v| v.as_str()).map(String::from);
-                let score = score_location_candidate(trimmed, &name, &id, loc_type.as_deref());
+                let score = score_location_candidate(&effective_query, &name, &id, loc_type.as_deref());
                 if id.is_empty() || name.is_empty() {
                     return None;
                 }
@@ -335,24 +341,55 @@ impl OebbClient {
             candidates.iter().filter(|c| c.score == top_score).collect();
 
         if top_candidates.len() > 1 {
-            let shown: Vec<Value> = top_candidates
+            // Secondary disambiguation: use Jaro-Winkler on original names to
+            // break ties (e.g. "Wien Hbf" vs "Wien Meidling" when query is "Wien").
+            let mut scored: Vec<(&LocationCandidate, f64)> = top_candidates
                 .iter()
-                .take(LOCATION_AMBIGUOUS_CANDIDATES)
                 .map(|c| {
-                    serde_json::json!({
-                        "id": c.id,
-                        "name": c.name,
-                        "type": c.loc_type,
-                    })
+                    let jw = jaro_winkler_similarity(
+                        &normalize_comparable_text(&effective_query),
+                        &normalize_comparable_text(&c.name),
+                    );
+                    (*c, jw)
                 })
                 .collect();
-            return LocationResolution::Err(serde_json::json!({
-                "error": "ambiguous_location",
-                "message": format!("Location \"{}\" is ambiguous for field \"{}\". Provide an explicit station ID (IBNR).", trimmed, field),
-                "field": field,
-                "query": trimmed,
-                "candidates": shown
-            }));
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // If the top two are within 0.01 JW distance, it's genuinely ambiguous.
+            let gap = if scored.len() >= 2 {
+                scored[0].1 - scored[1].1
+            } else {
+                1.0 // only one candidate, not ambiguous
+            };
+
+            if gap < 0.01 {
+                let shown: Vec<Value> = scored
+                    .iter()
+                    .take(LOCATION_AMBIGUOUS_CANDIDATES)
+                    .map(|(c, _)| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "name": c.name,
+                            "type": c.loc_type,
+                        })
+                    })
+                    .collect();
+                return LocationResolution::Err(serde_json::json!({
+                    "error": "ambiguous_location",
+                    "message": format!("Location \"{}\" is ambiguous for field \"{}\". Provide an explicit station ID (IBNR).", trimmed, field),
+                    "field": field,
+                    "query": trimmed,
+                    "candidates": shown
+                }));
+            }
+
+            // Clear winner from JW disambiguation
+            let best = scored[0].0;
+            return LocationResolution::Ok {
+                id: best.id.clone(),
+                name: Some(best.name.clone()),
+                resolved: true,
+            };
         }
 
         let top = &candidates[0];
@@ -1659,35 +1696,58 @@ fn score_location_candidate(
         return 0;
     }
     let mut score = 0i32;
+
+    // --- Tier 1: substring-based matching (highest value) ---
     if nc == nq {
-        score += 100;
+        score += 200;
     } else if nc.starts_with(&nq) {
-        score += 70;
+        score += 150;
     } else if nc.contains(&nq) {
-        score += 50;
+        score += 100;
+    } else {
+        // --- Tier 2: fuzzy matching ---
+        let jw = jaro_winkler_similarity(&nq, &nc);
+        if jw >= 0.85 {
+            // Map JW 0.85–1.0 to score 60–90
+            score += 60 + (jw * 30.0) as i32;
+        } else {
+            let lev = normalized_levenshtein_similarity(&nq, &nc);
+            if lev >= 0.70 {
+                // Map Levenshtein 0.70–1.0 to score 40–60
+                score += 40 + (lev * 20.0) as i32;
+            }
+            // else: no base score — candidate barely matches
+        }
     }
+
+    // --- Bonuses / penalties ---
     if candidate_type == Some("stop") {
         score += 5;
     }
-    // Prefer main station variants (Bahnhof/Hbf) when the query is a bare city name
-    // (i.e. query doesn't already contain "bahnhof", "hbf", etc.).
+    // Prefer main station variants (Bahnhof/Hbf) when the query is a bare city name.
     let nc_lower = candidate_name.to_lowercase();
     let nq_lower = query.to_lowercase();
     let query_has_station_keyword =
         nq_lower.contains("bahnhof") || nq_lower.contains("hbf") || nq_lower.contains("station");
-    if !query_has_station_keyword {
-        if nc_lower.contains("bahnhof") || nc_lower.contains(" hbf") {
-            score += 3;
-        }
+    if !query_has_station_keyword
+        && (nc_lower.contains("bahnhof") || nc_lower.contains(" hbf"))
+    {
+        score += 3;
     }
-    // Avoid selecting metro/U-Bahn style pseudo stops when user asks for rail stations.
+    // Avoid selecting metro/U-Bahn style pseudo stops.
     if candidate_name.contains("(U)") {
         score -= 20;
     }
-    // Prefer probable rail-network stop IDs over synthetic IDs (often 12* or 13* in local/meta nodes).
+    // Prefer probable rail-network stop IDs.
     if candidate_id.starts_with("81") || candidate_id.starts_with("80") {
         score += 4;
     }
+    // Length proximity bonus: prefer names close in length to the query (up to +5).
+    // This discourages short garbage matches like "Linz" matching "Klagenfurt Linzer Straße".
+    let len_diff = (nc.len() as i32 - nq.len() as i32).unsigned_abs() as usize;
+    let length_bonus = 5i32.saturating_sub(len_diff.min(5) as i32);
+    score += length_bonus;
+
     score
 }
 
@@ -1836,6 +1896,92 @@ async fn sleep_within_retry_budget(started: Instant, retry_budget_ms: u64, delay
     let remaining_ms = retry_budget_ms - elapsed_ms;
     tokio::time::sleep(Duration::from_millis(delay_ms.min(remaining_ms))).await;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exact_match_scores_highest() {
+        let s = score_location_candidate("Wien Hbf", "Wien Hbf", "8100002", Some("stop"));
+        assert!(s >= 200, "exact match should score >= 200, got {}", s);
+    }
+
+    #[test]
+    fn test_prefix_beats_contains() {
+        let prefix = score_location_candidate("Wien", "Wien Hbf", "8100002", Some("stop"));
+        let contains = score_location_candidate("Wien", "Bahnhof Wien", "8100099", Some("stop"));
+        assert!(
+            prefix > contains,
+            "prefix ({}) should beat contains ({})",
+            prefix,
+            contains
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_match_typo() {
+        // "Nuernberg" vs "Nürnberg Hbf" — after German umlaut expansion + deunicode,
+        // both normalize to contain "nuernberg", so this is a prefix/contains match.
+        let s = score_location_candidate("Nuernberg", "Nürnberg Hbf", "8000284", Some("stop"));
+        assert!(s >= 150, "deunicode-normalized prefix should score >= 150, got {}", s);
+    }
+
+    #[test]
+    fn test_metro_penalty() {
+        let rail = score_location_candidate("Wien", "Wien Hbf", "8100002", Some("stop"));
+        let metro = score_location_candidate("Wien", "Wien Hbf (U)", "1390170", Some("stop"));
+        assert!(
+            rail > metro,
+            "rail ({}) should beat metro ({})",
+            rail,
+            metro
+        );
+    }
+
+    #[test]
+    fn test_rail_id_bonus() {
+        let rail_id = score_location_candidate("Graz", "Graz Hbf", "8100173", Some("stop"));
+        let synth_id = score_location_candidate("Graz", "Graz Hbf", "1300173", Some("stop"));
+        assert!(
+            rail_id > synth_id,
+            "rail ID ({}) should beat synthetic ID ({})",
+            rail_id,
+            synth_id
+        );
+    }
+
+    #[test]
+    fn test_length_proximity_bonus() {
+        // "Linz" prefers "Linz Hbf" (short) over "Klagenfurt Linzer Straße" (long)
+        let short = score_location_candidate("Linz", "Linz Hbf", "8100013", Some("stop"));
+        let long = score_location_candidate("Linz", "Klagenfurt Linzer Straße", "8100099", Some("stop"));
+        assert!(
+            short > long,
+            "short name ({}) should beat long name ({})",
+            short,
+            long
+        );
+    }
+
+    #[test]
+    fn test_hbf_bonus_when_query_is_bare_city() {
+        let hbf = score_location_candidate("Salzburg", "Salzburg Hbf", "8100002", Some("stop"));
+        let other = score_location_candidate("Salzburg", "Salzburg Süd", "8100002", Some("stop"));
+        assert!(
+            hbf > other,
+            "Hbf ({}) should beat non-Hbf ({})",
+            hbf,
+            other
+        );
+    }
+
+    #[test]
+    fn test_empty_input_returns_zero() {
+        assert_eq!(score_location_candidate("", "Wien Hbf", "8100002", None), 0);
+        assert_eq!(score_location_candidate("Wien", "", "8100002", None), 0);
+    }
 }
 
 // --- Chained planning internal types ---
