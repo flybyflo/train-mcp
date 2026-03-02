@@ -1,5 +1,5 @@
 # Rust build artifacts
-/target/
+target/
 **/*.rs.bk
 
 # Cargo
@@ -27,3 +27,10 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# iOS / Xcode
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+ios/build/

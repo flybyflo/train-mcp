@@ -1,22 +1,32 @@
-Use these commands:
+# Repository Layout
+
+This repository is organized for a multi-project setup:
+
+- `mcp/`: Rust MCP server (`train-mcp`)
+- `ios/`: Native iOS SwiftUI app (`TrainiOS`)
+
+## Quick Start
+
+### MCP server
 
 ```bash
-# Claude Code (remote streamable HTTP MCP server)
-claude mcp add --transport http train-mcp https://train.floritzmaier.xyz/mcp
+cd mcp
+cargo run
 ```
+
+MCP usage/config docs are in `mcp/README.md`.
+
+### iOS app
 
 ```bash
-# Codex CLI (streamable HTTP MCP server)
-codex mcp add train-mcp --url https://train.floritzmaier.xyz/mcp
+cd ios
+xcodegen generate
+open TrainiOS.xcodeproj
 ```
 
-Optional verify commands:
+CLI build check:
 
 ```bash
-claude mcp list
-codex mcp list
+cd ios
+xcodebuild -project TrainiOS.xcodeproj -scheme TrainiOS -destination 'generic/platform=iOS Simulator' build
 ```
-
-Claude Code’s docs show `--transport http` for remote HTTP MCP servers, and Codex CLI’s reference shows `codex mcp add <name> --url <value>` for streamable HTTP URLs. ([Claude][1])
-
-[1]: https://code.claude.com/docs/en/mcp "Connect Claude Code to tools via MCP - Claude Code Docs"
