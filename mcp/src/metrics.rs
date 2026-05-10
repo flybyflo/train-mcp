@@ -30,7 +30,10 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
 
 pub static METRICS: Lazy<Metrics> = Lazy::new(|| {
     let http_requests_total = IntCounterVec::new(
-        Opts::new("train_mcp_http_requests_total", "Total HTTP requests for train-mcp."),
+        Opts::new(
+            "train_mcp_http_requests_total",
+            "Total HTTP requests for train-mcp.",
+        ),
         &["route", "status_class"],
     )
     .expect("create http_requests_total");
@@ -50,9 +53,11 @@ pub static METRICS: Lazy<Metrics> = Lazy::new(|| {
         &["reason"],
     )
     .expect("create http_rejected_total");
-    let mcp_inflight_requests =
-        IntGauge::new("train_mcp_inflight_requests", "Current inflight MCP requests.")
-            .expect("create mcp_inflight_requests");
+    let mcp_inflight_requests = IntGauge::new(
+        "train_mcp_inflight_requests",
+        "Current inflight MCP requests.",
+    )
+    .expect("create mcp_inflight_requests");
     let tool_calls_total = IntCounterVec::new(
         Opts::new("train_mcp_tool_calls_total", "Total MCP tool calls."),
         &["tool", "outcome"],
@@ -293,7 +298,12 @@ pub fn observe_protocol_invalid_payload(reason: &str) {
         .inc();
 }
 
-pub fn observe_oebb_upstream_attempt(endpoint: &str, status: &str, outcome: &str, duration: Duration) {
+pub fn observe_oebb_upstream_attempt(
+    endpoint: &str,
+    status: &str,
+    outcome: &str,
+    duration: Duration,
+) {
     METRICS
         .oebb_upstream_requests_total
         .with_label_values(&[endpoint, status])

@@ -307,7 +307,8 @@ impl OebbClient {
                 let id = entry.get("id")?.as_str()?.to_string();
                 let name = entry.get("name")?.as_str()?.to_string();
                 let loc_type = entry.get("type").and_then(|v| v.as_str()).map(String::from);
-                let score = score_location_candidate(&effective_query, &name, &id, loc_type.as_deref());
+                let score =
+                    score_location_candidate(&effective_query, &name, &id, loc_type.as_deref());
                 if id.is_empty() || name.is_empty() {
                     return None;
                 }
@@ -1729,9 +1730,7 @@ fn score_location_candidate(
     let nq_lower = query.to_lowercase();
     let query_has_station_keyword =
         nq_lower.contains("bahnhof") || nq_lower.contains("hbf") || nq_lower.contains("station");
-    if !query_has_station_keyword
-        && (nc_lower.contains("bahnhof") || nc_lower.contains(" hbf"))
-    {
+    if !query_has_station_keyword && (nc_lower.contains("bahnhof") || nc_lower.contains(" hbf")) {
         score += 3;
     }
     // Avoid selecting metro/U-Bahn style pseudo stops.
@@ -1925,7 +1924,11 @@ mod tests {
         // "Nuernberg" vs "Nürnberg Hbf" — after German umlaut expansion + deunicode,
         // both normalize to contain "nuernberg", so this is a prefix/contains match.
         let s = score_location_candidate("Nuernberg", "Nürnberg Hbf", "8000284", Some("stop"));
-        assert!(s >= 150, "deunicode-normalized prefix should score >= 150, got {}", s);
+        assert!(
+            s >= 150,
+            "deunicode-normalized prefix should score >= 150, got {}",
+            s
+        );
     }
 
     #[test]
@@ -1956,7 +1959,8 @@ mod tests {
     fn test_length_proximity_bonus() {
         // "Linz" prefers "Linz Hbf" (short) over "Klagenfurt Linzer Straße" (long)
         let short = score_location_candidate("Linz", "Linz Hbf", "8100013", Some("stop"));
-        let long = score_location_candidate("Linz", "Klagenfurt Linzer Straße", "8100099", Some("stop"));
+        let long =
+            score_location_candidate("Linz", "Klagenfurt Linzer Straße", "8100099", Some("stop"));
         assert!(
             short > long,
             "short name ({}) should beat long name ({})",
@@ -1969,12 +1973,7 @@ mod tests {
     fn test_hbf_bonus_when_query_is_bare_city() {
         let hbf = score_location_candidate("Salzburg", "Salzburg Hbf", "8100002", Some("stop"));
         let other = score_location_candidate("Salzburg", "Salzburg Süd", "8100002", Some("stop"));
-        assert!(
-            hbf > other,
-            "Hbf ({}) should beat non-Hbf ({})",
-            hbf,
-            other
-        );
+        assert!(hbf > other, "Hbf ({}) should beat non-Hbf ({})", hbf, other);
     }
 
     #[test]

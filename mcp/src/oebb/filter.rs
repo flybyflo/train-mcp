@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use super::normalize::{as_str, compact_object, normalize_comparable_text, summarize_place, jaro_winkler_similarity};
+use super::normalize::{
+    as_str, compact_object, jaro_winkler_similarity, normalize_comparable_text, summarize_place,
+};
 use super::types::ViaResolution;
 
 /// Check if any leg of a journey uses an excluded operator.

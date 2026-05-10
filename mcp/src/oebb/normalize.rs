@@ -413,7 +413,10 @@ mod tests {
     fn test_normalize_strips_punctuation() {
         assert_eq!(normalize_comparable_text("Wien Hbf (U)"), "wienhbfu");
         assert_eq!(normalize_comparable_text("  Graz  "), "graz");
-        assert_eq!(normalize_comparable_text("Frankfurt(Main)Hbf"), "frankfurtmainhbf");
+        assert_eq!(
+            normalize_comparable_text("Frankfurt(Main)Hbf"),
+            "frankfurtmainhbf"
+        );
     }
 
     #[test]

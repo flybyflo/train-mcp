@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: train-mcp-postgres18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: train_mcp
+      POSTGRES_USER: train_mcp
+      POSTGRES_PASSWORD: train_mcp
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      TZ: Europe/Vienna
+    ports:
+      - "55432:5432"
+    volumes:
+      - train_mcp_postgres18_data:/var/lib/postgresql
+      - ./mcp/sql/001_app_schema.sql:/docker-entrypoint-initdb.d/01_app_schema.sql:ro
+      - ./mcp/sql/002_transit_schema.sql:/docker-entrypoint-initdb.d/02_transit_schema.sql:ro
+      - ./mcp/bootstrap/03_station_data.dump:/docker-entrypoint-initdb.d/03_station_data.dump:ro
+      - ./mcp/bootstrap/03_restore_station_data.sh:/docker-entrypoint-initdb.d/03_restore_station_data.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U train_mcp -d train_mcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  train_mcp_postgres18_data:

@@ -1,5 +1,8 @@
 mod execute;
 mod search;
+mod transit_ops;
+
+pub use transit_ops::dispatch_transit_op;
 
 use std::sync::Arc;
 
@@ -82,7 +85,7 @@ fn js_value_to_serde(value: &JsValue) -> Value {
     Value::Null
 }
 
-pub(super) fn tool_error_payload(code: impl Into<String>, message: impl Into<String>) -> Value {
+pub(crate) fn tool_error_payload(code: impl Into<String>, message: impl Into<String>) -> Value {
     serde_json::json!({
         TOOL_ERROR_MARKER: true,
         "error": code.into(),
@@ -90,7 +93,7 @@ pub(super) fn tool_error_payload(code: impl Into<String>, message: impl Into<Str
     })
 }
 
-pub(super) fn normalize_tool_result(value: Value, fallback_code: &str) -> Value {
+pub(crate) fn normalize_tool_result(value: Value, fallback_code: &str) -> Value {
     let Some(obj) = value.as_object() else {
         return value;
     };
@@ -111,7 +114,7 @@ pub(super) fn normalize_tool_result(value: Value, fallback_code: &str) -> Value 
     Value::Object(wrapped)
 }
 
-pub(super) fn normalize_plan_journey_input(input: Value) -> Value {
+pub(crate) fn normalize_plan_journey_input(input: Value) -> Value {
     let mut obj = match input {
         Value::Object(obj) => obj,
         other => return other,
@@ -135,7 +138,7 @@ pub(super) fn normalize_plan_journey_input(input: Value) -> Value {
     Value::Object(obj)
 }
 
-pub(super) fn normalize_plan_tour_input(input: Value) -> Value {
+pub(crate) fn normalize_plan_tour_input(input: Value) -> Value {
     let mut obj = match input {
         Value::Object(obj) => obj,
         other => return other,
@@ -220,7 +223,7 @@ pub(super) fn normalize_plan_tour_input(input: Value) -> Value {
     Value::Object(obj)
 }
 
-pub(super) fn normalize_resolve_itinerary_input(input: Value) -> Value {
+pub(crate) fn normalize_resolve_itinerary_input(input: Value) -> Value {
     let mut obj = match input {
         Value::Object(obj) => obj,
         other => return other,

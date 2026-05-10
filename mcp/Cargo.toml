@@ -42,11 +42,12 @@ anyhow = "1"
 thiserror = "2"
 urlencoding = "2"
 async-trait = "0.1"
+jsonwebtoken = "9"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono"] }
 
 # Fuzzy string matching & Unicode transliteration
 strsim = "0.11"
 deunicode = "1.6"
-cargo-watch = "8.5.3"
 
 [dev-dependencies]
 rmcp = { version = "0.16", features = ["client", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }

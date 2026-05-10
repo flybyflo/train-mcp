@@ -1,27 +1,34 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::oebb::client::OebbClient;
 use crate::oebb::types::{
     LocationResolution, PlanJourneyInput, PlanTourInput, ResolveItineraryStopsInput,
 };
+use crate::persistence::Persistence;
 
 use super::provider::TransitProvider;
 
 #[derive(Clone)]
 pub struct OebbTransitProvider {
     client: OebbClient,
+    persistence: Option<Arc<Persistence>>,
 }
 
 impl OebbTransitProvider {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: String, persistence: Option<Arc<Persistence>>) -> Self {
         Self {
             client: OebbClient::new(base_url),
+            persistence,
         }
     }
 
-    pub fn from_client(client: OebbClient) -> Self {
-        Self { client }
+    pub fn from_client(client: OebbClient, persistence: Option<Arc<Persistence>>) -> Self {
+        Self {
+            client,
+            persistence,
+        }
     }
 }
 
@@ -38,6 +45,27 @@ impl TransitProvider for OebbTransitProvider {
         value: &str,
         resolve: bool,
     ) -> LocationResolution {
+        let trimmed = value.trim();
+        if resolve && !trimmed.is_empty() && !crate::oebb::normalize::looks_like_stop_id(trimmed) {
+            if let Some(persistence) = &self.persistence {
+                match persistence.resolve_station_id(trimmed).await {
+                    Ok(Some(station)) => {
+                        return LocationResolution::Ok {
+                            id: station.station_id,
+                            name: Some(station.name),
+                            resolved: true,
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            "station DB resolution failed for {field}={trimmed}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+
         self.client
             .resolve_location(tool_name, field, value, resolve)
             .await

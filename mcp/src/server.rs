@@ -30,13 +30,47 @@ pub struct TrainMcp {
 }
 
 impl TrainMcp {
+    /// MCP `search` / `execute` tools (sandboxed JS calling `codemode.*`).
+    pub async fn invoke_tool(
+        &self,
+        tool_name: &str,
+        input: CodeInput,
+    ) -> Result<CallToolResult, McpError> {
+        let mode = match tool_name {
+            "search" => Mode::Search,
+            "execute" => Mode::Execute,
+            _ => {
+                return Err(McpError::invalid_params(
+                    format!("unknown tool: {tool_name}"),
+                    None,
+                ));
+            }
+        };
+
+        let started = Instant::now();
+        metrics::observe_code_submission(tool_name, input.code.len());
+        for reference in detect_codemode_references(&input.code, tool_name) {
+            metrics::observe_code_reference(tool_name, reference);
+        }
+        let result = self.executor.execute(mode, &input.code).await;
+        let outcome = if result.error.is_some() {
+            "error"
+        } else {
+            "ok"
+        };
+        metrics::observe_tool_call(tool_name, outcome, started.elapsed());
+        let (tool_result, business_outcome, reason) = Self::build_call_tool_result(result);
+        metrics::observe_tool_result(tool_name, business_outcome, reason);
+        Ok(tool_result)
+    }
+
     pub fn new(oebb_base_url: String) -> Self {
-        let provider = Arc::new(OebbTransitProvider::new(oebb_base_url));
+        let provider = Arc::new(OebbTransitProvider::new(oebb_base_url, None));
         Self::new_with_provider_and_limits(provider, ExecutorLimits::default())
     }
 
     pub fn new_with_executor_limits(oebb_base_url: String, limits: ExecutorLimits) -> Self {
-        let provider = Arc::new(OebbTransitProvider::new(oebb_base_url));
+        let provider = Arc::new(OebbTransitProvider::new(oebb_base_url, None));
         Self::new_with_provider_and_limits(provider, limits)
     }
 
@@ -80,7 +114,11 @@ impl TrainMcp {
         });
 
         if is_ok {
-            (CallToolResult::structured(payload), business_outcome, reason)
+            (
+                CallToolResult::structured(payload),
+                business_outcome,
+                reason,
+            )
         } else {
             (
                 CallToolResult::structured_error(payload),
@@ -214,17 +252,7 @@ impl TrainMcp {
     /// Example: `const tools = await codemode.listTools({}); return tools;`
     #[tool(name = "search")]
     async fn search(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
-        let started = Instant::now();
-        metrics::observe_code_submission("search", params.0.code.len());
-        for reference in detect_codemode_references(&params.0.code, "search") {
-            metrics::observe_code_reference("search", reference);
-        }
-        let result = self.executor.execute(Mode::Search, &params.0.code).await;
-        let outcome = if result.error.is_some() { "error" } else { "ok" };
-        metrics::observe_tool_call("search", outcome, started.elapsed());
-        let (tool_result, business_outcome, reason) = Self::build_call_tool_result(result);
-        metrics::observe_tool_result("search", business_outcome, reason);
-        Ok(tool_result)
+        self.invoke_tool("search", params.0).await
     }
 
     /// Transit execution mode. All tools are called as `const result = await codemode.<toolName>({...}); return result;`
@@ -235,17 +263,7 @@ impl TrainMcp {
     /// Example 2 (multi-city tour): `const t = await codemode.oebbPlanTour({ departure: "2026-02-27T08:00:00+01:00", legs: [{ from: "A", to: "B", minStopMinutesAfter: 90 }, { from: "B", to: "C" }] }); return t;`
     #[tool(name = "execute")]
     async fn execute(&self, params: Parameters<CodeInput>) -> Result<CallToolResult, McpError> {
-        let started = Instant::now();
-        metrics::observe_code_submission("execute", params.0.code.len());
-        for reference in detect_codemode_references(&params.0.code, "execute") {
-            metrics::observe_code_reference("execute", reference);
-        }
-        let result = self.executor.execute(Mode::Execute, &params.0.code).await;
-        let outcome = if result.error.is_some() { "error" } else { "ok" };
-        metrics::observe_tool_call("execute", outcome, started.elapsed());
-        let (tool_result, business_outcome, reason) = Self::build_call_tool_result(result);
-        metrics::observe_tool_result("execute", business_outcome, reason);
-        Ok(tool_result)
+        self.invoke_tool("execute", params.0).await
     }
 }
 
