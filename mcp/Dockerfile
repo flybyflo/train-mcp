@@ -10,6 +10,7 @@ RUN apt-get update \
 # Cache dependencies first.
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
+COPY sql ./sql
 
 RUN cargo build --release
 
